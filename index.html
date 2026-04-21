@@ -1056,6 +1056,7 @@ header{text-align:center;padding:12px 20px 4px;position:relative;z-index:1;}
 .score-opt-btn:hover:not(.active){border-color:#c77dff;color:#c77dff;}
 </style>
 </head>
+<script src="https://cdn.jsdelivr.net/npm/@coderline/alphatab@latest/dist/alphaTab.js"></script>
 <body>
 
 <div id="startOverlay">
@@ -1645,14 +1646,14 @@ header{text-align:center;padding:12px 20px 4px;position:relative;z-index:1;}
       <button class="score-close" id="scoreClose">✕</button>
     </div>
     <div class="score-toolbar">
-      <button class="score-opt-btn active" id="scoreSizeNormal">標準</button>
-      <button class="score-opt-btn" id="scoreSizeLarge">大きく</button>
+      <div style="font-size:10px;color:var(--muted);letter-spacing:1px;">AlphaTab</div>
       <div style="margin-left:auto;display:flex;gap:6px;">
-        <button class="score-dl-btn" id="scoreDownload">📥 画像保存</button>
+        <button class="score-dl-btn" id="scoreDownload">📥 PNG保存</button>
       </div>
     </div>
+    <!-- AlphaTab描画エリア -->
     <div class="score-canvas-wrap" id="scoreCanvasWrap">
-      <canvas id="scoreCanvas"></canvas>
+      <div id="atWrap" style="background:#fff;min-height:200px;"></div>
     </div>
   </div>
 </div>
@@ -1864,29 +1865,60 @@ function buildChainForTrack(tr){
   return buildChain(p ? (p.reverb||0) : 0);
 }
 var _nCache={};
-function noiseBuf(dur){
-  var k=Math.round(dur*1000);if(_nCache[k]) return _nCache[k];
-  var len=Math.floor(actx.sampleRate*(dur+0.05)),buf=actx.createBuffer(1,len,actx.sampleRate);
-  var d=buf.getChannelData(0);for(var i=0;i<len;i++)d[i]=Math.random()*2-1;
-  return(_nCache[k]=buf);
+// ── ノイズバッファ（共有・ステレオ対応）──
+var _noiseBuffer = null;
+function getNoiseBuffer(){
+  if(_noiseBuffer) return _noiseBuffer;
+  var len = actx.sampleRate * 2;
+  var buf = actx.createBuffer(2, len, actx.sampleRate);
+  for(var c=0;c<2;c++){
+    var d = buf.getChannelData(c);
+    for(var i=0;i<len;i++) d[i] = Math.random()*2-1;
+  }
+  return (_noiseBuffer = buf);
 }
-function playNoise(t,dur,hpF,vol,revPct,decay){
-  var src=actx.createBufferSource();src.buffer=noiseBuf(dur);
-  var hp=actx.createBiquadFilter();hp.type='highpass';hp.frequency.value=hpF;
-  var g=actx.createGain();var dest=buildChain(revPct);
-  src.connect(hp);hp.connect(g);g.connect(dest);
-  g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.0001,t+(decay||dur));
-  src.start(t);src.stop(t+dur+0.05);
+
+// playNoise: bandpassフィルター＋スムーズなゲイン制御（クリックノイズ防止）
+function playNoise(t, dur, filterHz, vol, revPct, decay){
+  if(!actx) return;
+  var actualDecay = (decay !== undefined && decay >= 0) ? decay : dur;
+  var src = actx.createBufferSource();
+  src.buffer = getNoiseBuffer();
+  src.loop = true;
+  var filter = actx.createBiquadFilter();
+  filter.type = 'bandpass';
+  filter.frequency.value = filterHz;
+  filter.Q.value = 1.0;
+  var g = actx.createGain();
+  var dest = buildChain(revPct||0);
+  src.connect(filter); filter.connect(g); g.connect(dest);
+  g.gain.setValueAtTime(vol*0.5, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + actualDecay);
+  src.start(t);
+  src.stop(t + actualDecay + 0.02);
 }
-function playTone(t,freq,freqEnd,dur,vol,type,revPct){
-  var o=actx.createOscillator();o.type=type||'sine';
-  var g=actx.createGain();var dest=buildChain(revPct);
-  o.connect(g);g.connect(dest);
-  o.frequency.setValueAtTime(freq,t);
-  if(freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd,t+dur*0.85);
-  g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
-  o.start(t);o.stop(t+dur+0.01);
+
+// playTone: lowpassフィルター＋アタック＋スムーズなリリース
+function playTone(t, freq, freqEnd, dur, vol, type, revPct, attack){
+  if(!actx) return;
+  var o = actx.createOscillator();
+  var g = actx.createGain();
+  var filter = actx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = Math.max(400, freq*8);
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, t);
+  if(freqEnd) o.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t + dur);
+  var atk = attack || 0.001;
+  var dest = buildChain(revPct||0);
+  o.connect(filter); filter.connect(g); g.connect(dest);
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.linearRampToValueAtTime(vol*0.5, t + atk);
+  g.gain.setTargetAtTime(0.0001, t + dur*0.7, dur*0.1);
+  o.start(t);
+  o.stop(t + dur + 0.05);
 }
+
 
 // ── 音名→Hz ──
 var NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
@@ -2155,84 +2187,97 @@ var CATALOG={
 // ══════════════════════════════════════════════
 var FIXED_TRACKS=[
   {id:'crash1', name:'CRASH 1', sub:'16"',  emoji:'💥',accent:'#ffd166',group:'cymbal',
-   params:{pitch:0,vol:100,reverb:55,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playNoise(t,1.8,4000*r,v*1.0,p.reverb,1.8);playNoise(t,0.6,2500*r,v*0.6,p.reverb,0.55);}},
-  {id:'crash2', name:'CRASH 2', sub:'18"',  emoji:'💥',accent:'#ffb347',group:'cymbal',
-   params:{pitch:0,vol:100,reverb:60,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,(p.pitch-2)/12),v=p.vol/100;
-     playNoise(t,2.2,3500*r,v*1.1,p.reverb,2.2);playNoise(t,0.8,2200*r,v*0.65,p.reverb,0.75);}},
-  {id:'ride',   name:'RIDE',    sub:'20"',  emoji:'🔔',accent:'#e8c96e',group:'cymbal',
-   params:{pitch:0,vol:100,reverb:35,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     [[600,1.5,0.35],[1800,1.2,0.22],[3200,0.9,0.12],[5400,0.6,0.07]].forEach(function(x){playTone(t,x[0]*r,null,x[1],v*x[2],'sine',p.reverb);});
-     playNoise(t,0.4,6000*r,v*0.3,p.reverb,0.4);}},
-  {id:'ridecup',name:'CUP',     sub:'BELL', emoji:'🔔',accent:'#f5d76e',group:'cymbal',
-   params:{pitch:0,vol:100,reverb:20,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     [[800,0.9,0.4],[2400,0.7,0.28],[4000,0.55,0.18],[6500,0.4,0.10],[9000,0.25,0.06]].forEach(function(x){playTone(t,x[0]*r,null,x[1],v*x[2],'sine',p.reverb*0.4);});}},
-  {id:'hhclose',name:'HI-HAT',  sub:'CLOSED',emoji:'🎩',accent:'#a78bfa',group:'hihat',
-   params:{pitch:0,vol:100,reverb:5,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;playNoise(t,0.08,8000*r,v*0.45,p.reverb,0.08);}},
-  {id:'hhhalf',  name:'HI-HAT',  sub:'HALF', emoji:'🎩',accent:'#b8a0ff',group:'hihat',
-   params:{pitch:0,vol:100,reverb:8,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     // ハーフオープン：クローズより長く、オープンより短い。
-     // わずかに開いた隙間から漏れる音を再現するため
-     // 高域ノイズ（クローズ成分）＋中域ノイズ（開いた部分）を混ぜる
-     playNoise(t,0.20,8500*r,v*0.40,p.reverb,0.18); // 高域（シャリシャリ感）
-     playNoise(t,0.20,4000*r,v*0.18,p.reverb,0.20); // 中域（開き感）
-     // 口を少し開けたような「チッ…」という感触
-   }},
-  {id:'hhopen', name:'HI-HAT',  sub:'OPEN', emoji:'🎩',accent:'#c4b5fd',group:'hihat',
-   params:{pitch:0,vol:100,reverb:12,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;playNoise(t,0.45,7000*r,v*0.5,p.reverb,0.45);}},
-  {id:'snare',  name:'SNARE',   sub:'14"',  emoji:'🥁',accent:'#34d399',group:'snare',
-   params:{pitch:0,vol:100,reverb:15,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,200*r,80*r,0.12,v*0.7,'sine',p.reverb);playNoise(t,0.22,2000,v*0.9,p.reverb,0.22);}},
-  {id:'rimshot', name:'CLOSED RIM', sub:'RIM', emoji:'🪵',accent:'#a0c4ff',group:'snare',
-   params:{pitch:0,vol:100,reverb:8,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     // カッカッという硬い音：倍音豊かな高めのトーン複数＋鋭いノイズ
-     playTone(t,1800*r,900*r,0.025,v*0.9,'sine',p.reverb);
-     playTone(t,3200*r,1600*r,0.018,v*0.4,'sine',p.reverb);
-     playTone(t,5000*r,2500*r,0.012,v*0.2,'sine',p.reverb);
-     playNoise(t,0.018,4000,v*0.6,p.reverb*0.3,0.015);}},
-  {id:'tom10',  name:'TOM 10"', sub:'HIGH', emoji:'🪘',accent:'#f87171',group:'tom',
    params:{pitch:0,vol:100,reverb:18,filter:12000},
    playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
      var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,300*r,120*r,0.28,v*1.1,'sine',p.reverb);playNoise(t,0.12,500,v*0.3,p.reverb,0.1);}},
+     playNoise(t,1.2,8000*r,v*0.35,p.reverb,1.1);
+     playNoise(t,0.8,4000*r,v*0.20,p.reverb,0.7);
+     playTone(t,3800*r,2200*r,0.3,v*0.08,'sawtooth',p.reverb,0.001);
+     playTone(t,6200*r,4000*r,0.2,v*0.05,'triangle',p.reverb,0.001);}},
+  {id:'crash2', name:'CRASH 2', sub:'18"',  emoji:'💥',accent:'#ffb347',group:'cymbal',
+   params:{pitch:0,vol:100,reverb:22,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,(p.pitch-2)/12),v=p.vol/100;
+     playNoise(t,1.5,7000*r,v*0.38,p.reverb,1.4);
+     playNoise(t,1.0,3500*r,v*0.22,p.reverb,0.9);
+     playTone(t,3200*r,1900*r,0.35,v*0.07,'sawtooth',p.reverb,0.001);}},
+  {id:'ride',   name:'RIDE',    sub:'20"',  emoji:'🔔',accent:'#e8c96e',group:'cymbal',
+   params:{pitch:0,vol:100,reverb:4,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playNoise(t,0.35,6000*r,v*0.15,p.reverb,0.28);
+     playTone(t,3200*r,2600*r,0.25,v*0.12,'triangle',p.reverb,0.001);
+     playTone(t,6400*r,5200*r,0.15,v*0.06,'triangle',p.reverb,0.001);}},
+  {id:'ridecup',name:'CUP',     sub:'BELL', emoji:'🔔',accent:'#f5d76e',group:'cymbal',
+   params:{pitch:0,vol:100,reverb:2,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playNoise(t,0.15,8500*r,v*0.18,p.reverb,0.12);
+     playTone(t,5500*r,4500*r,0.10,v*0.12,'triangle',p.reverb,0.001);}},
+  {id:'hhclose',name:'HI-HAT',  sub:'CLOSED',emoji:'🎩',accent:'#a78bfa',group:'hihat',
+   params:{pitch:0,vol:100,reverb:1,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playNoise(t,0.06,10000*r,v*0.22,p.reverb,0.045);
+     playTone(t,8000*r,6000*r,0.015,v*0.05,'square',0,0.001);}},
+  {id:'hhhalf', name:'HI-HAT',  sub:'HALF', emoji:'🎩',accent:'#b8a0ff',group:'hihat',
+   params:{pitch:0,vol:100,reverb:3,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playNoise(t,0.18,9000*r,v*0.22,p.reverb,0.15);
+     playTone(t,7500*r,5500*r,0.05,v*0.04,'square',0,0.001);}},
+  {id:'hhopen', name:'HI-HAT',  sub:'OPEN', emoji:'🎩',accent:'#c4b5fd',group:'hihat',
+   params:{pitch:0,vol:100,reverb:4,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playNoise(t,0.35,9000*r,v*0.22,p.reverb,0.30);
+     playTone(t,7000*r,5000*r,0.10,v*0.04,'square',2,0.001);}},
+  {id:'snare',  name:'SNARE',   sub:'14"',  emoji:'🥁',accent:'#34d399',group:'snare',
+   params:{pitch:0,vol:100,reverb:12,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playTone(t,220*r,160*r,0.08,v*0.5,'sine',p.reverb,0.001);
+     playTone(t,360*r,200*r,0.04,v*0.3,'sine',p.reverb,0.001);
+     playNoise(t,0.22,3500,v*1.0,p.reverb,0.20);
+     playNoise(t,0.22,800,v*0.3,p.reverb,0.12);}},
+  {id:'rimshot', name:'CLOSED RIM', sub:'RIM', emoji:'🪵',accent:'#a0c4ff',group:'snare',
+   params:{pitch:0,vol:100,reverb:4,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playTone(t,1600*r,800*r,0.022,v*0.85,'sine',p.reverb,0.001);
+     playTone(t,3000*r,1500*r,0.015,v*0.4,'sine',p.reverb,0.001);
+     playNoise(t,0.015,4200,v*0.5,p.reverb,0.012);}},
+  {id:'tom10',  name:'TOM 10"', sub:'HIGH', emoji:'🪘',accent:'#f87171',group:'tom',
+   params:{pitch:0,vol:100,reverb:15,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playTone(t,280*r,130*r,0.32,v*1.0,'sine',p.reverb,0.002);
+     playNoise(t,0.10,600,v*0.28,p.reverb,0.08);}},
   {id:'tom12',  name:'TOM 12"', sub:'MID-H',emoji:'🪘',accent:'#fb923c',group:'tom',
+   params:{pitch:0,vol:100,reverb:18,filter:12000},
+   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
+     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
+     playTone(t,210*r,95*r,0.38,v*1.0,'sine',p.reverb,0.002);
+     playNoise(t,0.12,450,v*0.28,p.reverb,0.10);}},
+  {id:'tom13',  name:'TOM 13"', sub:'MID-L',emoji:'🪘',accent:'#fbbf24',group:'tom',
    params:{pitch:0,vol:100,reverb:20,filter:12000},
    playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
      var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,230*r,90*r,0.32,v*1.1,'sine',p.reverb);playNoise(t,0.14,400,v*0.3,p.reverb,0.12);}},
-  {id:'tom13',  name:'TOM 13"', sub:'MID-L',emoji:'🪘',accent:'#fbbf24',group:'tom',
+     playTone(t,175*r,78*r,0.42,v*1.05,'sine',p.reverb,0.002);
+     playNoise(t,0.13,380,v*0.28,p.reverb,0.11);}},
+  {id:'tom16',  name:'TOM 16"', sub:'FLOOR',emoji:'🪘',accent:'#a3e635',group:'tom',
    params:{pitch:0,vol:100,reverb:22,filter:12000},
    playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
      var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,180*r,70*r,0.36,v*1.15,'sine',p.reverb);playNoise(t,0.15,320,v*0.3,p.reverb,0.13);}},
-  {id:'tom16',  name:'TOM 16"', sub:'FLOOR',emoji:'🪘',accent:'#a3e635',group:'tom',
-   params:{pitch:0,vol:100,reverb:28,filter:12000},
-   playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
-     var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,120*r,48*r,0.48,v*1.3,'sine',p.reverb);playNoise(t,0.18,200,v*0.35,p.reverb,0.15);}},
+     playTone(t,160*r,68*r,0.45,v*1.05,'sine',p.reverb,0.002);
+     playNoise(t,0.14,350,v*0.28,p.reverb,0.12);}},
   {id:'kick',   name:'KICK',    sub:'22"',  emoji:'😤',accent:'#f97316',group:'kick',
-   params:{pitch:0,vol:100,reverb:8,filter:12000},
+   params:{pitch:0,vol:100,reverb:20,filter:12000},
    playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
      var p=this.params,r=Math.pow(2,p.pitch/12),v=p.vol/100;
-     playTone(t,180*r,40*r,0.38,v*2.0,'sine',p.reverb);playNoise(t,0.06,200,v*0.5,p.reverb*0.3,0.05);}},
+     playTone(t,65*r,28*r,0.55,v*1.1,'sine',p.reverb,0.002);
+     playTone(t,120*r,45*r,0.12,v*0.4,'sine',p.reverb,0.001);
+     playNoise(t,0.04,180,v*0.15,p.reverb,0.035);}},
   {id:'cowbell',name:'COWBELL', sub:'',     emoji:'🐄',accent:'#e879f9',group:'perc',
    params:{pitch:0,vol:100,reverb:10,filter:12000},
    playAt:function(t){if(hasSample(this.id)){playSample(this.id,t,this.params);return;}
@@ -5368,28 +5413,242 @@ function analyzeScoreWithAI(){
 // line: 五線上の位置。0=第1線上、1=第1間、2=第2線、3=第2間、4=第3線（中央）
 //       5=第3間、6=第4線、7=第4間、8=第5線、それ以上=下加線
 // 参考アプリ(VexFlow)のkey定義に合わせて配置
-var SCORE_PARTS = [
-  {id:'crash1',  label:'Cr1', line:-3,   head:'xo',   stem:'up',   ledger:true},
-  {id:'crash2',  label:'Cr2', line:-3.5, head:'xo',   stem:'up',   ledger:true},
-  {id:'ride',    label:'Rd',  line:-1,   head:'x',    stem:'up',   ledger:false},
-  {id:'ridecup', label:'Cup', line:-1,   head:'xo',   stem:'up',   ledger:false},
-  {id:'hhopen',  label:'HHo', line:-2,   head:'xo',   stem:'up',   ledger:true},
-  {id:'hhhalf',  label:'HHh', line:-1,   head:'x',    stem:'up',   ledger:false},
-  {id:'hhclose', label:'HH',  line:-1,   head:'x',    stem:'up',   ledger:false},
-  {id:'snare',   label:'Sn',  line:3,    head:'fill', stem:'up',   ledger:false},
-  {id:'rimshot', label:'Rim', line:3,    head:'x',    stem:'up',   ledger:false},
-  {id:'tom10',   label:'T1',  line:1,    head:'fill', stem:'down', ledger:false},
-  {id:'tom12',   label:'T2',  line:2,    head:'fill', stem:'down', ledger:false},
-  {id:'tom13',   label:'T3',  line:3.5,  head:'fill', stem:'down', ledger:false},
-  {id:'tom16',   label:'FT',  line:4.5,  head:'fill', stem:'down', ledger:false},
-  {id:'kick',    label:'BD',  line:6,    head:'fill', stem:'down', ledger:true},
-  {id:'cowbell', label:'CB',  line:-3,   head:'xo',   stem:'up',   ledger:true},
-];
+// ══════════════════════════════════════════════
+// 🎼 ドラム譜面出力（AlphaTab + AlphaTex）
+// ══════════════════════════════════════════════
 
-var scoreScale = 1.0; // 1.0 or 1.4
+// AlphaTab API インスタンス
+var _atApi = null;
+var _atDiv = null;
+
+// ドラムトラック → AlphaTex articulation マッピング
+var DRUM_ART = {
+  kick:     'Kickhit2',
+  snare:    'SnareHit',
+  rimshot:  'Snarerimshot',
+  hhclose:  'HiHatclosed',
+  hhhalf:   'HiHatclosed',
+  hhopen:   'HiHatopen',
+  crash1:   'Crashhighhit',
+  crash2:   'Crashhighhit',
+  ride:     'Ridemiddle',
+  ridecup:  'Ridebell',
+  tom10:    'HighTomhit',
+  tom12:    'LowTomhit',
+  tom13:    'HighFloorTomhit',
+  tom16:    'LowFloorTomhit',
+  cowbell:  'Cowbellhit',
+};
+
+// 上声部（符幹上向き）のトラック
+var DRUM_UPPER = {
+  crash1:1, crash2:1, ride:1, ridecup:1,
+  hhclose:1, hhhalf:1, hhopen:1,
+  snare:1, rimshot:1,
+  tom10:1, tom12:1, tom13:1, tom16:1,
+  cowbell:1,
+};
+// 下声部（符幹下向き）のトラック
+var DRUM_LOWER = { kick:1 };
+
+function buildAlphaTex(){
+  var SPB = spb();
+  var BPB = getBeats();
+  var ms  = numBars;
+  var bpmVal = bpm;
+  var totalSt = ms * SPB * BPB;
+  var BS = String.fromCharCode(92);
+
+  function stepsToDur(steps){
+    if(steps >= SPB*4) return '1';
+    if(steps >= SPB*2) return '2';
+    if(steps >= SPB)   return '4';
+    if(steps >= SPB/2) return '8';
+    if(steps >= SPB/4) return '16';
+    if(steps >= SPB/8) return '32';
+    return '32';
+  }
+
+  // ステップ→イベントスロット構築
+  var slots = [];
+  for(var i=0;i<totalSt;i++) slots.push([]);
+  ALL_TRACKS.forEach(function(tr){
+    if(hiddenTracks[tr.id]) return;
+    var pat = getPattern(tr.id);
+    for(var s=0;s<totalSt;s++){
+      if(pat[s]) slots[s].push({track:tr.id, step:s});
+    }
+  });
+
+  var lines = [];
+  lines.push(BS+'hideDynamics');
+  lines.push(BS+'track "Drums"');
+  lines.push(BS+'instrument percussion');
+  lines.push(BS+'tempo '+bpmVal);
+  lines.push(BS+'clef neutral');
+  lines.push(BS+'articulation defaults');
+
+  // ── Voice 1: 上声部 ──
+  lines.push(BS+'voice');
+  for(var m=0;m<ms;m++){
+    var barLen = SPB*BPB;
+    var tokens = [];
+    var si = 0;
+    while(si < barLen){
+      var gs = m*barLen + si;
+      var evs = (slots[gs]||[]).filter(function(ev){return DRUM_UPPER[ev.track];});
+      if(evs.length > 0){
+        // 次のイベントまでの距離
+        var dist = barLen - si;
+        for(var nj=si+1;nj<barLen;nj++){
+          if((slots[m*barLen+nj]||[]).some(function(ev){return DRUM_UPPER[ev.track];})){
+            dist=nj-si; break;
+          }
+        }
+        var st = Math.min(dist, SPB);
+        if(st>=SPB)        st=SPB;
+        else if(st>=SPB/2) st=SPB/2;
+        else if(st>=SPB/4) st=SPB/4;
+        else               st=Math.max(1,Math.floor(SPB/8));
+        st = Math.max(1,st);
+        var arts = evs.map(function(ev){return DRUM_ART[ev.track]||'SnareHit';})
+                      .filter(function(a,i,arr){return arr.indexOf(a)===i;});
+        var orn = getOrn(evs[0].track, gs);
+        var dur = stepsToDur(st);
+        var beat = arts.length===1 ? arts[0]+'.'+dur : '('+arts.join(' ')+').'+dur;
+        var props = '{beam up';
+        if(orn==='accent') props += ' ac';
+        if(orn==='ghost')  props += ' g';
+        props += '}';
+        var prefix = '';
+        if(orn==='flam') prefix = arts[0]+'.16{gr} ';
+        if(orn==='drag') prefix = arts[0]+'.32{gr} '+arts[0]+'.32{gr} ';
+        tokens.push(prefix+beat+props);
+        si += st;
+      } else {
+        // 休符
+        var gap = 0;
+        while(si+gap < barLen && !(slots[m*barLen+si+gap]||[]).some(function(ev){return DRUM_UPPER[ev.track];})) gap++;
+        var rem = gap;
+        while(rem > 0){
+          var rs;
+          if(rem>=SPB)        rs=SPB;
+          else if(rem>=SPB/2) rs=SPB/2;
+          else if(rem>=SPB/4) rs=SPB/4;
+          else                rs=Math.max(1,Math.floor(SPB/8));
+          rs = Math.max(1,rs);
+          tokens.push('r.'+stepsToDur(rs));
+          rem -= rs;
+        }
+        si += gap;
+      }
+    }
+    lines.push(tokens.join(' ')+' |');
+  }
+
+  // ── Voice 2: 下声部（キック）──
+  lines.push(BS+'voice');
+  var HALF = Math.max(1, Math.floor(SPB/2));
+  for(var m2=0;m2<ms;m2++){
+    var barLen2 = SPB*BPB;
+    var tokens2 = [];
+    var si2 = 0;
+    while(si2 < barLen2){
+      var gs2 = m2*barLen2 + si2;
+      var evs2 = (slots[gs2]||[]).filter(function(ev){return DRUM_LOWER[ev.track];});
+      if(evs2.length > 0){
+        var dist2 = barLen2 - si2;
+        for(var nj2=si2+1;nj2<barLen2;nj2++){
+          if((slots[m2*barLen2+nj2]||[]).some(function(ev){return DRUM_LOWER[ev.track];})){
+            dist2=nj2-si2; break;
+          }
+        }
+        var tillBeat = SPB-(si2%SPB);
+        var st2 = Math.min(dist2, tillBeat, HALF);
+        if(st2>=HALF)        st2=HALF;
+        else if(st2>=SPB/4)  st2=SPB/4;
+        else                 st2=Math.max(1,Math.floor(SPB/8));
+        st2 = Math.max(1,st2);
+        var arts2 = evs2.map(function(ev){return DRUM_ART[ev.track]||'Kickhit2';})
+                        .filter(function(a,i,arr){return arr.indexOf(a)===i;});
+        var orn2 = getOrn(evs2[0].track, gs2);
+        var pre2 = '';
+        if(orn2==='flam') pre2 = arts2[0]+'.'+stepsToDur(st2)+'{gr} ';
+        var prop2 = '{beam down}';
+        if(orn2==='accent') prop2 = '{beam down ac}';
+        tokens2.push(pre2+(arts2.length===1?arts2[0]+'.'+stepsToDur(st2):'('+arts2.join(' ')+').'+stepsToDur(st2))+prop2);
+        si2 += st2;
+      } else {
+        var beatPos = si2%SPB;
+        var tillB = SPB-beatPos;
+        var distK = tillB;
+        for(var nk=si2+1;nk<si2+tillB&&nk<barLen2;nk++){
+          if((slots[m2*barLen2+nk]||[]).some(function(ev){return DRUM_LOWER[ev.track];})){distK=nk-si2;break;}
+        }
+        var rs2 = Math.min(distK,tillB,HALF);
+        if(rs2>=HALF)       rs2=HALF;
+        else if(rs2>=SPB/4) rs2=SPB/4;
+        else                rs2=Math.max(1,Math.floor(SPB/8));
+        rs2=Math.max(1,rs2);
+        tokens2.push('r.'+stepsToDur(rs2)+'{beam down}');
+        si2 += rs2;
+      }
+    }
+    lines.push(tokens2.join(' ')+' |');
+  }
+
+  return lines.join(String.fromCharCode(10));
+}
+
+function renderScore(){
+  var scoreDiv = document.getElementById('atWrap');
+  if(typeof alphaTab === 'undefined'){
+    scoreDiv.innerHTML = '<div style="color:#9090b8;padding:16px">AlphaTab 読込中... しばらくお待ちください</div>';
+    setTimeout(renderScore, 800);
+    return;
+  }
+
+  var tex = buildAlphaTex();
+  console.log('[AlphaTex]', tex.slice(0,300));
+
+  // 既存インスタンスを破棄
+  if(_atApi){
+    try{ _atApi.destroy(); } catch(e){}
+    _atApi = null;
+  }
+  scoreDiv.innerHTML = '';
+
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'background:#fff;';
+  scoreDiv.appendChild(wrap);
+
+  try {
+    _atApi = new alphaTab.AlphaTabApi(wrap, {
+      core:    { engine:'svg', logLevel:0 },
+      display: { scale:1.1, barsPerRow:4 },
+      player:  { enablePlayer:false }
+    });
+    _atDiv = scoreDiv;
+
+    // SVGグレーを黒に強制
+    _atApi.renderFinished.on(function(){
+      wrap.querySelectorAll('svg *').forEach(function(el){
+        var f = el.getAttribute('fill');
+        var s = el.getAttribute('stroke');
+        if(f && f !== 'none' && f.toLowerCase() !== '#ffffff' && f.toLowerCase() !== 'white') el.setAttribute('fill','#111');
+        if(s && s !== 'none' && s.toLowerCase() !== '#ffffff' && s.toLowerCase() !== 'white') el.setAttribute('stroke','#111');
+      });
+    });
+
+    _atApi.tex(tex);
+  } catch(e){
+    scoreDiv.innerHTML = '<div style="color:#ff6b6b;padding:16px">譜面生成エラー: '+e.message+'</div>';
+    console.error('[AlphaTex error]', e, tex);
+  }
+}
 
 document.getElementById('scoreExportBtn').addEventListener('click', function(){
-  drawScore();
+  renderScore();
   document.getElementById('scoreOverlay').classList.add('open');
   lockBodyScroll();
 });
@@ -5398,368 +5657,39 @@ document.getElementById('scoreClose').addEventListener('click', function(){
   unlockBodyScroll();
 });
 document.getElementById('scoreOverlay').addEventListener('click', function(e){
-  if(e.target===this){document.getElementById('scoreOverlay').classList.remove('open');unlockBodyScroll();}
+  if(e.target===this){
+    document.getElementById('scoreOverlay').classList.remove('open');
+    unlockBodyScroll();
+  }
 });
-document.getElementById('scoreSizeNormal').addEventListener('click', function(){
-  scoreScale=1.0;
-  this.classList.add('active');
-  document.getElementById('scoreSizeLarge').classList.remove('active');
-  drawScore();
-});
-document.getElementById('scoreSizeLarge').addEventListener('click', function(){
-  scoreScale=1.4;
-  this.classList.add('active');
-  document.getElementById('scoreSizeNormal').classList.remove('active');
-  drawScore();
-});
+
+// PNG保存（SVGをCanvasに変換）
 document.getElementById('scoreDownload').addEventListener('click', function(){
-  var canvas = document.getElementById('scoreCanvas');
-  var link = document.createElement('a');
-  link.download = 'TATATAN_score.png';
-  link.href = canvas.toDataURL('image/png');
-  link.click();
+  var wrap = document.getElementById('atWrap');
+  var svg = wrap.querySelector('svg');
+  if(!svg){ alert('先に譜面を生成してください'); return; }
+  var data = new XMLSerializer().serializeToString(svg);
+  var blob = new Blob([data], {type:'image/svg+xml;charset=utf-8'});
+  var url = URL.createObjectURL(blob);
+  var img = new Image();
+  img.onload = function(){
+    var canvas = document.createElement('canvas');
+    canvas.width = img.width || svg.viewBox.baseVal.width || 800;
+    canvas.height = img.height || svg.viewBox.baseVal.height || 400;
+    var ctx2 = canvas.getContext('2d');
+    ctx2.fillStyle = '#ffffff';
+    ctx2.fillRect(0,0,canvas.width,canvas.height);
+    ctx2.drawImage(img,0,0);
+    URL.revokeObjectURL(url);
+    var link = document.createElement('a');
+    link.download = 'TATATAN_score.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  };
+  img.src = url;
 });
 
-function drawScore(){
-  var canvas = document.getElementById('scoreCanvas');
-  var ctx = canvas.getContext('2d');
-  var sc = scoreScale;
 
-  // ── レイアウト定数 ──
-  var MARGIN_L = 80 * sc;
-  var MARGIN_R = 24 * sc;
-  var MARGIN_T = 44 * sc;
-  var MARGIN_B = 36 * sc;
-  var LINE_GAP = 9 * sc;       // 五線間隔
-  var STAFF_H  = LINE_GAP * 4;
-  var ROW_H    = STAFF_H + 90 * sc; // キック・クラッシュ加線のスペースを確保
-  var HEAD_R   = 4.5 * sc;
-  var STEM_LEN = 30 * sc;
-
-  // 1拍 = SPB ステップ
-  // 1小節のステップ数 = SPB * BPB
-  var SPB  = spb();
-  var BPB  = getBeats();
-  var STEPS_PER_BAR = SPB * BPB;
-  var tot  = totalSteps();
-  var numBars = Math.ceil(tot / STEPS_PER_BAR);
-
-  // 1ステップの幅（1拍をSPBで割った幅）
-  // 四分音符基準（SPB=4なら16分=1ステップ）で幅を決める
-  // 1拍の表示幅を固定して、ステップ数で割る
-  var BEAT_W = 48 * sc;   // 1拍の幅
-  var STEP_W = BEAT_W / SPB;
-  var BAR_W  = BEAT_W * BPB;
-  var totalW = MARGIN_L + BAR_W + MARGIN_R; // 1行の幅（1小節=1行）
-  var totalH = MARGIN_T + numBars * ROW_H + MARGIN_B;
-
-  canvas.width  = totalW;
-  canvas.height = totalH;
-  canvas.style.width  = totalW + 'px';
-  canvas.style.height = totalH + 'px';
-
-  // 背景
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, totalW, totalH);
-
-  // ── 有効パートを絞る ──
-  var activeParts = SCORE_PARTS.filter(function(p){
-    var pat = patternStore[p.id] && patternStore[p.id][currentMode];
-    return pat && pat.some(function(v){return v;});
-  });
-  ALL_TRACKS.filter(function(t){return t.isCustom&&t.isPitched;}).forEach(function(tr){
-    if(getPattern(tr.id).some(function(v){return v;}))
-      activeParts.push({id:tr.id,label:tr.name.slice(0,3),line:1,head:'fill',stem:'up',isCustom:true,accent:tr.accent});
-  });
-
-  // ── タイトル ──
-  ctx.fillStyle='#222';
-  ctx.font='bold '+(14*sc)+'px Arial';
-  ctx.textAlign='left';
-  ctx.fillText('TATATAN — Drum Score', MARGIN_L, 20*sc);
-  ctx.font=(10*sc)+'px Arial';
-  ctx.fillStyle='#666';
-  ctx.fillText('BPM: '+bpm+'  '+tsNumerator+'/'+tsDenominator+'  ('+currentMode+' grid)', MARGIN_L, 33*sc);
-
-  // ── 小節ループ ──
-  for(var barIdx=0; barIdx<numBars; barIdx++){
-    var rowY = MARGIN_T + barIdx * ROW_H;
-    var barStart = barIdx * STEPS_PER_BAR;
-
-    // 小節番号
-    ctx.fillStyle='#444';
-    ctx.font='bold '+(11*sc)+'px Arial';
-    ctx.textAlign='left';
-    ctx.fillText((barIdx+1), MARGIN_L - MARGIN_L*0.85, rowY+15*sc);
-
-    // 五線（line=0,2,4,6,8に対応）
-    ctx.strokeStyle='#555';
-    ctx.lineWidth=0.8*sc;
-    for(var li=0;li<5;li++){
-      var ly = sY(rowY, li*2, sc);
-      ctx.beginPath();
-      ctx.moveTo(MARGIN_L, ly);
-      ctx.lineTo(MARGIN_L+BAR_W, ly);
-      ctx.stroke();
-    }
-
-    // パーカッション記号（五線の中央に配置）
-    ctx.fillStyle='#333';
-    ctx.font='bold '+(20*sc)+'px serif';
-    ctx.textAlign='center';
-    ctx.fillText('𝄥', MARGIN_L - 22*sc, sY(rowY,4,sc)+6*sc);
-
-    // 縦線（五線の上下に合わせる）
-    var staffTop2 = sY(rowY,0,sc);
-    var staffBot2 = sY(rowY,8,sc);
-    ctx.strokeStyle='#333';
-    ctx.lineWidth=1.5*sc;
-    ctx.beginPath();ctx.moveTo(MARGIN_L,staffTop2);ctx.lineTo(MARGIN_L,staffBot2);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(MARGIN_L+BAR_W,staffTop2);ctx.lineTo(MARGIN_L+BAR_W,staffBot2);ctx.stroke();
-
-    // 拍の縦線
-    ctx.strokeStyle='#ccc';ctx.lineWidth=0.5*sc;
-    for(var beat=1;beat<BPB;beat++){
-      var bx=MARGIN_L+beat*BEAT_W;
-      ctx.beginPath();ctx.moveTo(bx,staffTop2);ctx.lineTo(bx,staffBot2);ctx.stroke();
-    }
-
-    // ステップの補助線（16分単位）
-    if(SPB>=4){
-      ctx.strokeStyle='rgba(0,0,0,0.05)';ctx.lineWidth=0.4*sc;
-      for(var ss=1;ss<STEPS_PER_BAR;ss++){
-        if(ss%SPB!==0){
-          var sx=MARGIN_L+ss*STEP_W;
-          ctx.beginPath();ctx.moveTo(sx,staffTop2);ctx.lineTo(sx,staffBot2);ctx.stroke();
-        }
-      }
-    }
-
-    // パート名
-    ctx.font=(8*sc)+'px Arial';ctx.fillStyle='#888';ctx.textAlign='right';
-    activeParts.forEach(function(p){
-      ctx.fillText(p.label, MARGIN_L-4*sc, sY(rowY,p.line,sc)+3*sc);
-    });
-
-    // ── 各パートの音符を描画 ──
-    activeParts.forEach(function(p){
-      var pat = getPattern(p.id);
-      // この小節のON/OFFパターンを取得
-      var steps = [];
-      for(var s=0;s<STEPS_PER_BAR;s++){
-        var gs=barStart+s;
-        steps.push(gs<tot ? !!pat[gs] : false);
-      }
-
-      // ── 音符グループを作る ──
-      // 各ONステップについて「音符の長さ（ステップ数）」を求める
-      // 連続するONは次のONまでの距離 or 拍末まで
-      var notes = []; // {step, dur, beat, subbeat}
-      for(var s=0;s<STEPS_PER_BAR;s++){
-        if(!steps[s]) continue;
-        // 次のONまでの距離（= この音符の長さ）
-        var dur=1;
-        for(var ns=s+1;ns<STEPS_PER_BAR;ns++){
-          if(steps[ns]) break;
-          dur++;
-        }
-        // 最大は拍末まで（拍をまたがないようにする）
-        var beatOfStep = Math.floor(s/SPB);
-        var nextBeatStart = (beatOfStep+1)*SPB;
-        dur = Math.min(dur, nextBeatStart-s);
-
-        notes.push({step:s, dur:dur});
-      }
-
-      // ── 1拍ごとに連桁グループにまとめる ──
-      for(var beatIdx2=0;beatIdx2<BPB;beatIdx2++){
-        var beatNotes = notes.filter(function(n){return Math.floor(n.step/SPB)===beatIdx2;});
-        if(beatNotes.length===0) continue;
-
-        // 符幹方向
-        var stemDir = p.stem;
-
-        // 連桁が必要かどうか（1拍に複数の八分以下がある場合）
-        var needBeam = beatNotes.length>1 && beatNotes.every(function(n){return n.dur<SPB;});
-
-        // 連桁の符幹X座標を収集
-        var beamStemXs = [];
-
-        beatNotes.forEach(function(n){
-          var nx = MARGIN_L + n.step*STEP_W + STEP_W/2;
-          var ny = sY(rowY, p.line, sc);
-          var gs = barStart+n.step;
-          var orn = getOrn(p.id, gs);
-
-          // 音符の種類を決定（durをSPB基準で）
-          // dur==SPB*4 → 全音符, SPB*2 → 二分, SPB → 四分, SPB/2 → 八分, SPB/4 → 十六分
-          var noteType;
-          if(n.dur>=SPB*4)      noteType='whole';
-          else if(n.dur>=SPB*2) noteType='half';
-          else if(n.dur>=SPB)   noteType='quarter';
-          else if(n.dur>=SPB/2) noteType='eighth';
-          else                  noteType='sixteenth';
-
-          // 音符頭を描く
-          drawDrumHead(ctx, nx, ny, p.head, HEAD_R, sc);
-
-          // 符幹（全音符以外）
-          var stemX = stemDir==='up' ? nx+HEAD_R*0.9 : nx-HEAD_R*0.9;
-          var stemTopY, stemBotY;
-          if(stemDir==='up'){
-            stemTopY = ny - STEM_LEN;
-            stemBotY = ny;
-          } else {
-            stemTopY = ny;
-            stemBotY = ny + STEM_LEN;
-          }
-          if(noteType!=='whole'){
-            ctx.strokeStyle='#111';ctx.lineWidth=1.1*sc;
-            ctx.beginPath();ctx.moveTo(stemX,stemBotY);ctx.lineTo(stemX,stemTopY);ctx.stroke();
-            beamStemXs.push({x:stemX, topY:stemTopY, botY:stemBotY, noteType:noteType});
-          }
-
-          // 付点（二分+）
-          if(noteType==='half'){
-            ctx.fillStyle='#111';
-            ctx.beginPath();ctx.arc(nx+HEAD_R*1.8, ny, 1.5*sc, 0, Math.PI*2);ctx.fill();
-          }
-
-          // 単独フラグ（連桁なし時）
-          if(!needBeam){
-            var flagY = stemDir==='up' ? stemTopY : stemBotY;
-            if(noteType==='eighth'){
-              drawFlag(ctx, stemX, flagY, stemDir, 1, sc);
-            } else if(noteType==='sixteenth'){
-              drawFlag(ctx, stemX, flagY, stemDir, 2, sc);
-            }
-          }
-
-          // 加線（五線の外の音符に必要な短い横線）
-          // 五線: line=0(第1線)〜line=8(第5線)
-          // line<0 → 上加線、line>8 → 下加線
-          if(p.line < 0){
-            // 上加線（0から-2刻みで加線を引く）
-            for(var ll=0; ll>=p.line; ll-=2){
-              if(ll<=p.line+0.5) drawLedgerLine(ctx, nx, sY(rowY,ll,sc), HEAD_R, sc);
-            }
-          } else if(p.line > 8){
-            // 下加線
-            for(var ll=8; ll<=p.line; ll+=2){
-              if(ll>=p.line-0.5) drawLedgerLine(ctx, nx, sY(rowY,ll,sc), HEAD_R, sc);
-            }
-          }
-
-          // 装飾音符バッジ
-          if(orn){
-            var badgeMap={flam:'FL',drag:'DR',ghost:'GH',accent:'AC',rim:'RM',cross:'CR',buzz:'BZ',choke:'CH'};
-            var badge=badgeMap[orn];
-            if(badge){
-              ctx.fillStyle='#c00';ctx.font='bold '+(6*sc)+'px Arial';ctx.textAlign='center';
-              ctx.fillText(badge, nx, (stemDir==='up'?stemTopY:stemBotY)-(stemDir==='up'?5:-10)*sc);
-            }
-          }
-        });
-
-        // ── 連桁を描く ──
-        if(needBeam && beamStemXs.length>=2){
-          var hasEighth    = beatNotes.some(function(n){return n.dur<SPB&&n.dur>=SPB/2;});
-          var hasSixteenth = beatNotes.some(function(n){return n.dur<SPB/2;});
-          var firstS = beamStemXs[0], lastS = beamStemXs[beamStemXs.length-1];
-          var beamY1 = stemDir==='up' ? firstS.topY : firstS.botY;
-          var beamY2 = stemDir==='up' ? lastS.topY  : lastS.botY;
-          var beamThick = 3*sc;
-          var beamGap   = 4*sc;
-
-          // 第1連桁（八分以上）
-          ctx.fillStyle='#111';
-          drawBeamLine(ctx, firstS.x, beamY1, lastS.x, beamY2, beamThick, stemDir);
-
-          // 第2連桁（十六分）
-          if(hasSixteenth){
-            var by1b = stemDir==='up' ? beamY1+beamGap : beamY1-beamGap;
-            var by2b = stemDir==='up' ? beamY2+beamGap : beamY2-beamGap;
-            drawBeamLine(ctx, firstS.x, by1b, lastS.x, by2b, beamThick, stemDir);
-          }
-        }
-      }
-    });
-  }
-
-  // ── 凡例 ──
-  var legendY = MARGIN_T + numBars*ROW_H + 10*sc;
-  ctx.font=(8*sc)+'px Arial';ctx.fillStyle='#888';ctx.textAlign='left';
-  var items=activeParts.map(function(p){return p.label+': '+(p.id.replace('_',' '));});
-  // 複数行に折り返し
-  var line='', maxW=totalW-MARGIN_L-MARGIN_R;
-  items.forEach(function(it,i){
-    var test=line+(line?'  /  ':'')+it;
-    if(ctx.measureText(test).width>maxW){
-      ctx.fillText(line, MARGIN_L, legendY);
-      legendY+=11*sc;line=it;
-    } else { line=test; }
-  });
-  if(line) ctx.fillText(line, MARGIN_L, legendY);
-}
-
-// ── ヘルパー関数 ──
-// sY: line値をCanvasのY座標に変換
-// line=0 → 第1線(最上), line=2 → 第2線, line=4 → 第3線(中央)
-// line=6 → 第4線, line=8 → 第5線(最下), line<0 → 五線より上
-// 0.5刻みで間（スペース）も表現
-function sY(rowY, line, sc){
-  var LINE_GAP = 9 * sc;
-  var staffTop = rowY + 22 * sc; // 第1線のY座標
-  return staffTop + line * (LINE_GAP / 2);
-}
-
-function drawDrumHead(ctx, x, y, type, r, sc){
-  ctx.strokeStyle='#111';ctx.fillStyle='#111';ctx.lineWidth=1.4*sc;
-  if(type==='x'||type==='xo'){
-    ctx.lineWidth=1.6*sc;
-    ctx.beginPath();ctx.moveTo(x-r,y-r);ctx.lineTo(x+r,y+r);
-    ctx.moveTo(x+r,y-r);ctx.lineTo(x-r,y+r);ctx.stroke();
-    if(type==='xo'){
-      ctx.lineWidth=0.9*sc;
-      ctx.beginPath();ctx.arc(x,y,r*1.7,0,Math.PI*2);ctx.stroke();
-    }
-  } else if(type==='fill'){
-    ctx.beginPath();ctx.ellipse(x,y,r*1.1,r*0.85,-0.2,0,Math.PI*2);ctx.fill();
-  } else {
-    ctx.beginPath();ctx.ellipse(x,y,r*1.1,r*0.85,-0.2,0,Math.PI*2);ctx.stroke();
-  }
-}
-
-function drawFlag(ctx, x, y, dir, count, sc){
-  ctx.strokeStyle='#111';ctx.lineWidth=1.1*sc;
-  for(var i=0;i<count;i++){
-    var fy = dir==='up' ? y+i*5*sc : y-i*5*sc;
-    ctx.beginPath();
-    if(dir==='up'){
-      ctx.moveTo(x,fy);
-      ctx.bezierCurveTo(x+12*sc,fy+6*sc, x+14*sc,fy+12*sc, x+6*sc,fy+16*sc);
-    } else {
-      ctx.moveTo(x,fy);
-      ctx.bezierCurveTo(x+12*sc,fy-6*sc, x+14*sc,fy-12*sc, x+6*sc,fy-16*sc);
-    }
-    ctx.stroke();
-  }
-}
-
-function drawBeamLine(ctx, x1, y1, x2, y2, thick, dir){
-  ctx.beginPath();
-  ctx.moveTo(x1, y1);ctx.lineTo(x2, y2);
-  ctx.lineTo(x2, y2+(dir==='up'?thick:-thick));
-  ctx.lineTo(x1, y1+(dir==='up'?thick:-thick));
-  ctx.closePath();ctx.fill();
-}
-
-function drawLedgerLine(ctx, x, y, r, sc){
-  ctx.strokeStyle='#555';ctx.lineWidth=0.8*sc;
-  ctx.beginPath();ctx.moveTo(x-r*2.2,y);ctx.lineTo(x+r*2.2,y);ctx.stroke();
-}
-
-// ══════════════════════════════════════════════
 // 🎭 キャラモード（STAGE）
 // ══════════════════════════════════════════════
 
