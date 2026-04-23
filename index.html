@@ -6132,6 +6132,136 @@ document.querySelectorAll('.adv-toggle-btn').forEach(function(btn){
 // ══════════════════════════════════════════════
 
 // 音源プリセット定義（参考アプリのacousticに基づく + 追加プリセット）
+// ══════════════════════════════════════════════
+// 🥁 WAVキット定義（Netlify配置用）
+// ══════════════════════════════════════════════
+
+// WAVファイルのベースパス（GitHubのフォルダ構造に合わせて設定）
+var KIT_BASE = '/TATATAN/';
+
+// キット定義：各トラックIDに対応するWAVファイル（ラウンドロビン配列）
+var KIT_DEFS = {
+  'rock': {
+    label: 'Rock Kit',
+    files: {
+      kick:    ['Rock-Kit-Kick-ff-1.wav','Rock-Kit-Kick-ff-2.wav'],
+      snare:   ['Rock-Snare-ff-1.wav','Rock-Snare-ff-2.wav','Rock-Snare-ff-3.wav'],
+      rimshot: ['Rock-Snare-pp-1.wav','Rock-Snare-pp-2.wav'],
+      hhclose: ['Rock-Kit-HiHat-Tip-1.wav','Rock-Kit-HiHat-Tip-2.wav'],
+      hhhalf:  ['Rock-Kit-HiHat-Shank-1.wav','Rock-Kit-HiHat-Shank-2.wav'],
+      hhopen:  ['Rock-Kit-HiHat-Open.wav'],
+      crash1:  ['Rock-Kit-Crash-1-1.wav','Rock-Kit-Crash-1-2.wav'],
+      crash2:  ['Rock-Kit-Crash-2-1.wav','Rock-Kit-Crash-2-2.wav'],
+      ride:    ['Rock-Ride-Tip.wav','Rock-Ride-Shank.wav'],
+      ridecup: ['Rock-Ride-Bell.wav'],
+      tom10:   ['Rock-Rack-1.wav','Rock-Rack-2.wav'],
+      tom12:   ['Rock-Rack-1.wav','Rock-Rack-2.wav'],
+      tom13:   ['Rock-Kit-Floor-1.wav','Rock-Kit-Floor-2.wav'],
+      tom16:   ['Rock-Kit-Floor-1.wav','Rock-Kit-Floor-2.wav'],
+    }
+  },
+  'slingerland': {
+    label: 'Slingerland',
+    files: {
+      kick:    ['Slingerland-Kit-Kick-A.wav','Slingerland-Kit-Kick-B.wav'],
+      snare:   ['Ludwig-Snare-A.wav','Ludwig-Snare-B.wav','Ludwig-Snare-C.wav','Ludwig-Snare-D.wav'],
+      rimshot: ['Ludwig-Snare-C.wav','Ludwig-Snare-D.wav'],
+      hhclose: ['Slingerland-Kit-SabianHHX-HiHat-Closed-A.wav','Slingerland-Kit-SabianHHX-HiHat-Closed-B.wav','Slingerland-Kit-SabianHHX-HiHat-Closed-C.wav','Slingerland-Kit-SabianHHX-HiHat-Closed-D.wav'],
+      hhhalf:  ['Slingerland-Kit-SabianHHX-HiHat-OpenClose-A.wav','Slingerland-Kit-SabianHHX-HiHat-OpenClose-B.wav'],
+      hhopen:  ['Slingerland-Kit-SabianHHX-HiHat-Open-A.wav'],
+      crash1:  ['Slingerland-Kit-Sabian-Crash-Left-A.wav','Slingerland-Kit-Sabian-Crash-Left-B.wav'],
+      crash2:  ['Slingerland-Kit-Sabian-Crash-Right-A.wav','Slingerland-Kit-Sabian-Crash-Right-B.wav'],
+      ride:    ['Slingerland-Kit-Sabian-Ride-A.wav','Slingerland-Kit-Sabian-Ride-B.wav'],
+      ridecup: ['Slingerland-Kit-Sabian-Ride-A.wav'],
+      tom10:   ['Slingerland-Kit-RackTom-A.wav','Slingerland-Kit-RackTom-B.wav'],
+      tom12:   ['Slingerland-Kit-RackTom-A.wav','Slingerland-Kit-RackTom-B.wav'],
+      tom13:   ['Slingerland-Kit-FloorTom-A.wav','Slingerland-Kit-FloorTom-B.wav'],
+      tom16:   ['Slingerland-Kit-FloorTom-A.wav','Slingerland-Kit-FloorTom-B.wav'],
+    }
+  },
+  'jazz': {
+    label: 'Jazz Kit',
+    files: {
+      kick:    ['Jazz-Kick-ff-1.wav','Jazz-Kick-ff-2.wav'],
+      snare:   ['Jazz-Snare-ff-1.wav','Jazz-Snare-ff-2.wav'],
+      rimshot: ['Jazz-Rim-1.wav','Jazz-Rim-2.wav'],
+      hhclose: ['Jazz-HH-Closed-1.wav','Jazz-HH-Closed-2.wav','Jazz-HH-Closed-3.wav'],
+      hhhalf:  ['Jazz-HH-Closed-2.wav','Jazz-HH-Closed-3.wav'],
+      hhopen:  ['Jazz-HH-Open-1.wav','Jazz-HH-Open-2.wav'],
+      crash1:  ['Jazz-Crash-1.wav'],
+      crash2:  ['Jazz-Crash-2.wav'],
+      ride:    ['Jazz-Ride-1.wav','Jazz-Ride-2.wav'],
+      ridecup: ['Jazz-Cup-1.wav'],
+      tom10:   ['Jazz-Tom12-1.wav','Jazz-Tom12-2.wav'],
+      tom12:   ['Jazz-Tom12-1.wav','Jazz-Tom12-2.wav'],
+      tom13:   ['Jazz-Tom16-1.wav','Jazz-Tom16-2.wav'],
+      tom16:   ['Jazz-Tom16-1.wav','Jazz-Tom16-2.wav'],
+    }
+  },
+};
+
+// ── WAVサンプルエンジン ──
+var _kitBuffers = {};   // { 'rock/kick/0': AudioBuffer, ... }
+var _kitRRIndex = {};   // ラウンドロビンカウンター
+var _activeKit = null;  // 現在選択中のキットID
+var _kitLoading = {};   // 読み込み中フラグ
+
+// 単一WAVをデコードしてキャッシュ
+function loadKitFile(kitId, trackId, fileIdx, url){
+  var key = kitId+'/'+trackId+'/'+fileIdx;
+  if(_kitBuffers[key]) return Promise.resolve(_kitBuffers[key]);
+  return fetch(url)
+    .then(function(r){
+      if(!r.ok) throw new Error('HTTP '+r.status+' '+url);
+      return r.arrayBuffer();
+    })
+    .then(function(ab){ return actx.decodeAudioData(ab); })
+    .then(function(buf){ _kitBuffers[key]=buf; return buf; })
+    .catch(function(e){ console.warn('[Kit] 読込失敗:', url, e.message); return null; });
+}
+
+// キット全体をバックグラウンド読み込み
+function preloadKit(kitId){
+  if(_kitLoading[kitId]) return;
+  _kitLoading[kitId] = true;
+  var def = KIT_DEFS[kitId];
+  if(!def) return;
+  Object.keys(def.files).forEach(function(trackId){
+    def.files[trackId].forEach(function(fname, i){
+      loadKitFile(kitId, trackId, i, KIT_BASE+fname);
+    });
+  });
+}
+
+// キットのWAVを再生（ラウンドロビン）
+function playKitSample(kitId, trackId, t, params){
+  var def = KIT_DEFS[kitId];
+  if(!def || !def.files[trackId]) return false;
+  var files = def.files[trackId];
+  var rrKey = kitId+'/'+trackId;
+  var idx = (_kitRRIndex[rrKey]||0) % files.length;
+  _kitRRIndex[rrKey] = idx+1;
+  var bufKey = kitId+'/'+trackId+'/'+idx;
+  var buf = _kitBuffers[bufKey];
+  if(!buf){
+    // まだ読み込み中→フォールバック（シンセ音源）
+    loadKitFile(kitId, trackId, idx, KIT_BASE+files[idx]);
+    return false;
+  }
+  var src = actx.createBufferSource();
+  src.buffer = buf;
+  // ピッチ・音量調整
+  var p = params || {pitch:0,vol:100,reverb:0};
+  var r = Math.pow(2,(p.pitch||0)/12);
+  src.playbackRate.value = r;
+  var g = actx.createGain();
+  g.gain.value = (p.vol||100)/100 * 0.85;
+  var dest = buildChain(p.reverb||0);
+  src.connect(g); g.connect(dest);
+  src.start(t);
+  return true;
+}
+
 var SYNTH_PRESETS = {
   'acoustic': {
     label: '生ドラム',
@@ -6197,24 +6327,30 @@ var _trackPreset = {};
 // 発音時にプリセットを使用するよう既存のplayAtをラップ
 var _origFireTrackForPreset = fireTrack;
 fireTrack = function(tr, step, t){
-  // サンプルがある場合はそのまま
-  if(hasSample(tr.id)){
-    _origFireTrackForPreset(tr, step, t);
-    return;
-  }
   // カスタム音程トラックはプリセット対象外
   if(tr.isCustom && tr.isPitched){
     _origFireTrackForPreset(tr, step, t);
     return;
   }
-  // プリセット発音
+  // ① ユーザーが録音したサンプル優先
+  if(hasSample(tr.id)){
+    _origFireTrackForPreset(tr, step, t);
+    return;
+  }
+  // ② アクティブキットのWAVサンプル
+  if(_activeKit){
+    var played = playKitSample(_activeKit, tr.id, t, tr.params);
+    if(played) return;
+    // 読み込み中はシンセにフォールバック（下に続く）
+  }
+  // ③ シンセプリセット
   var presetId = _trackPreset[tr.id] || _globalPreset;
   var preset = SYNTH_PRESETS[presetId];
   if(preset && preset[tr.id]){
     preset[tr.id](t, tr.params);
     return;
   }
-  // プリセットにない楽器はデフォルト
+  // ④ デフォルト（FIXED_TRACKSのplayAt）
   _origFireTrackForPreset(tr, step, t);
 };
 
@@ -6224,12 +6360,77 @@ function openSampler(){
   body.innerHTML = '';
   var presetIds = Object.keys(SYNTH_PRESETS);
 
-  // グローバルプリセット選択
+  // ── WAVキット選択 ──
+  var kWrap = document.createElement('div');
+  kWrap.className = 'sampler-global';
+  kWrap.style.borderColor = 'rgba(78,205,196,0.3)';
+  var kLbl = document.createElement('div');
+  kLbl.className = 'sampler-global-lbl';
+  kLbl.style.color = '#4ecdc4';
+  kLbl.textContent = '🎚 実音キット（WAVサンプル）';
+  kWrap.appendChild(kLbl);
+
+  var kNote = document.createElement('div');
+  kNote.style.cssText = 'font-size:10px;color:var(--muted);margin-bottom:8px;line-height:1.5;';
+  kNote.textContent = 'Netlify公開URL上で動作します。初回は読み込みに数秒かかります。';
+  kWrap.appendChild(kNote);
+
+  var kRow = document.createElement('div');
+  kRow.className = 'sampler-preset-row';
+
+  // 「シンセ音源」ボタン（キットなし）
+  var noKitBtn = document.createElement('button');
+  noKitBtn.className = 'sampler-preset-btn' + (!_activeKit?' active':'');
+  noKitBtn.textContent = '🎛 シンセ音源';
+  noKitBtn.style.borderColor = '#4ecdc4';
+  noKitBtn.addEventListener('click', function(){
+    _activeKit = null;
+    openSampler();
+  });
+  kRow.appendChild(noKitBtn);
+
+  Object.keys(KIT_DEFS).forEach(function(kitId){
+    var kitDef = KIT_DEFS[kitId];
+    var btn = document.createElement('button');
+    var isActive = _activeKit === kitId;
+    btn.className = 'sampler-preset-btn' + (isActive?' active':'');
+    btn.style.borderColor = '#4ecdc4';
+    if(isActive) btn.style.background = '#4ecdc4';
+    btn.textContent = kitDef.label;
+
+    // 読み込み状態表示
+    var loadedCount = 0, totalCount = 0;
+    Object.keys(kitDef.files).forEach(function(tid){
+      kitDef.files[tid].forEach(function(f, i){
+        totalCount++;
+        if(_kitBuffers[kitId+'/'+tid+'/'+i]) loadedCount++;
+      });
+    });
+    if(_activeKit===kitId && loadedCount < totalCount){
+      btn.textContent += ' ('+loadedCount+'/'+totalCount+')';
+    }
+
+    btn.addEventListener('click', function(){
+      _activeKit = kitId;
+      // バックグラウンド読み込み開始
+      if(!actx) initAudio();
+      preloadKit(kitId);
+      openSampler();
+      // 2秒後にUI更新（読み込み進捗を反映）
+      setTimeout(openSampler, 2000);
+      setTimeout(openSampler, 5000);
+    });
+    kRow.appendChild(btn);
+  });
+  kWrap.appendChild(kRow);
+  body.appendChild(kWrap);
+
+  // ── グローバルシンセプリセット選択 ──
   var gWrap = document.createElement('div');
   gWrap.className = 'sampler-global';
   var gLbl = document.createElement('div');
   gLbl.className = 'sampler-global-lbl';
-  gLbl.textContent = '🎵 全体プリセット';
+  gLbl.textContent = '🎵 シンセプリセット（全体）';
   gWrap.appendChild(gLbl);
   var gRow = document.createElement('div');
   gRow.className = 'sampler-preset-row';
@@ -6239,63 +6440,50 @@ function openSampler(){
     btn.textContent = SYNTH_PRESETS[pid].label;
     btn.addEventListener('click', function(){
       _globalPreset = pid;
-      _trackPreset = {}; // 個別設定をリセット
-      openSampler(); // UI更新
+      _trackPreset = {};
+      openSampler();
     });
     gRow.appendChild(btn);
   });
   gWrap.appendChild(gRow);
   body.appendChild(gWrap);
 
-  // トラック別設定
-  var tLbl = document.createElement('div');
-  tLbl.className = 'sampler-track-lbl';
-  tLbl.textContent = 'パート別設定（個別に上書き可能）';
-  body.appendChild(tLbl);
+  // ── トラック別シンセプリセット ──
+  if(!_activeKit){
+    var tLbl = document.createElement('div');
+    tLbl.className = 'sampler-track-lbl';
+    tLbl.textContent = 'パート別設定（個別に上書き可能）';
+    body.appendChild(tLbl);
 
-  ALL_TRACKS.forEach(function(tr){
-    if(tr.isCustom && tr.isPitched) return; // 音程トラックは対象外
-    var row = document.createElement('div');
-    row.className = 'sampler-track-row';
-
-    var name = document.createElement('div');
-    name.className = 'sampler-track-name';
-    name.style.color = tr.accent;
-    name.textContent = tr.emoji + ' ' + tr.name;
-    row.appendChild(name);
-
-    var btns = document.createElement('div');
-    btns.className = 'sampler-track-presets';
-
-    // 「全体に従う」ボタン
-    var defBtn = document.createElement('button');
-    var isDefault = !_trackPreset[tr.id];
-    defBtn.className = 'sampler-track-btn global' + (isDefault?' active':'');
-    defBtn.textContent = '全体';
-    defBtn.addEventListener('click', function(){
-      delete _trackPreset[tr.id];
-      openSampler();
-    });
-    btns.appendChild(defBtn);
-
-    // 各プリセットボタン
-    presetIds.forEach(function(pid){
-      // このプリセットにこの楽器の定義があるか確認
-      if(!SYNTH_PRESETS[pid][tr.id]) return;
-      var btn = document.createElement('button');
-      var isActive = _trackPreset[tr.id]===pid;
-      btn.className = 'sampler-track-btn' + (isActive?' active':'');
-      btn.textContent = SYNTH_PRESETS[pid].label;
-      btn.addEventListener('click', function(){
-        _trackPreset[tr.id] = pid;
-        openSampler();
+    ALL_TRACKS.forEach(function(tr){
+      if(tr.isCustom && tr.isPitched) return;
+      var row = document.createElement('div');
+      row.className = 'sampler-track-row';
+      var name = document.createElement('div');
+      name.className = 'sampler-track-name';
+      name.style.color = tr.accent;
+      name.textContent = tr.emoji + ' ' + tr.name;
+      row.appendChild(name);
+      var btns = document.createElement('div');
+      btns.className = 'sampler-track-presets';
+      var defBtn = document.createElement('button');
+      var isDefault = !_trackPreset[tr.id];
+      defBtn.className = 'sampler-track-btn global' + (isDefault?' active':'');
+      defBtn.textContent = '全体';
+      defBtn.addEventListener('click', function(){ delete _trackPreset[tr.id]; openSampler(); });
+      btns.appendChild(defBtn);
+      presetIds.forEach(function(pid){
+        if(!SYNTH_PRESETS[pid][tr.id]) return;
+        var btn = document.createElement('button');
+        btn.className = 'sampler-track-btn' + (_trackPreset[tr.id]===pid?' active':'');
+        btn.textContent = SYNTH_PRESETS[pid].label;
+        btn.addEventListener('click', function(){ _trackPreset[tr.id]=pid; openSampler(); });
+        btns.appendChild(btn);
       });
-      btns.appendChild(btn);
+      row.appendChild(btns);
+      body.appendChild(row);
     });
-
-    row.appendChild(btns);
-    body.appendChild(row);
-  });
+  }
 
   document.getElementById('samplerOverlay').classList.add('open');
   lockBodyScroll();
