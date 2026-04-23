@@ -6255,10 +6255,11 @@ var KIT_DEFS = {
 };
 
 // ── WAVサンプルエンジン ──
-var _kitBuffers = {};   // { 'rock/kick/0': AudioBuffer, ... }
-var _kitRRIndex = {};   // ラウンドロビンカウンター
-var _activeKit = null;  // 現在選択中のキットID
-var _kitLoading = {};   // 読み込み中フラグ
+var _kitBuffers = {};      // { 'rock/kick/0': AudioBuffer, ... }
+var _kitRRIndex = {};      // ラウンドロビンカウンター
+var _kitFixedIndex = {};   // 固定サンプル番号 { 'rock/kick': 0 } or 未設定=ラウンドロビン
+var _activeKit = null;     // 現在選択中のキットID
+var _kitLoading = {};      // 読み込み中フラグ
 
 // 単一WAVをデコードしてキャッシュ
 function loadKitFile(kitId, trackId, fileIdx, url){
@@ -6287,24 +6288,32 @@ function preloadKit(kitId){
   });
 }
 
-// キットのWAVを再生（ラウンドロビン）
+// キットのWAVを再生（固定 or ラウンドロビン）
 function playKitSample(kitId, trackId, t, params){
   var def = KIT_DEFS[kitId];
   if(!def || !def.files[trackId]) return false;
   var files = def.files[trackId];
   var rrKey = kitId+'/'+trackId;
-  var idx = (_kitRRIndex[rrKey]||0) % files.length;
-  _kitRRIndex[rrKey] = idx+1;
+
+  // 固定サンプルが設定されているか確認
+  var fixedIdx = _kitFixedIndex[rrKey];
+  var idx;
+  if(fixedIdx !== undefined && fixedIdx >= 0){
+    idx = fixedIdx % files.length;
+  } else {
+    // ラウンドロビン
+    idx = (_kitRRIndex[rrKey]||0) % files.length;
+    _kitRRIndex[rrKey] = idx+1;
+  }
+
   var bufKey = kitId+'/'+trackId+'/'+idx;
   var buf = _kitBuffers[bufKey];
   if(!buf){
-    // まだ読み込み中→フォールバック（シンセ音源）
     loadKitFile(kitId, trackId, idx, KIT_BASE+files[idx]);
     return false;
   }
   var src = actx.createBufferSource();
   src.buffer = buf;
-  // ピッチ・音量調整
   var p = params || {pitch:0,vol:100,reverb:0};
   var r = Math.pow(2,(p.pitch||0)/12);
   src.playbackRate.value = r;
@@ -6477,6 +6486,85 @@ function openSampler(){
     kRow.appendChild(btn);
   });
   kWrap.appendChild(kRow);
+
+  // ── アクティブキットのサンプル固定設定 ──
+  if(_activeKit && KIT_DEFS[_activeKit]){
+    var kitDef2 = KIT_DEFS[_activeKit];
+    var fixLbl = document.createElement('div');
+    fixLbl.style.cssText = 'font-family:"Bebas Neue",cursive;font-size:10px;letter-spacing:2px;color:#4ecdc4;margin:10px 0 6px;';
+    fixLbl.textContent = 'サンプル固定（パートごとに選択）';
+    kWrap.appendChild(fixLbl);
+
+    var fixNote = document.createElement('div');
+    fixNote.style.cssText = 'font-size:10px;color:var(--muted);margin-bottom:8px;';
+    fixNote.textContent = '「RR」= ラウンドロビン（毎回切替）';
+    kWrap.appendChild(fixNote);
+
+    // トラック順に並べる（FIXED_TRACKSの順）
+    var trackIds = Object.keys(kitDef2.files);
+    var orderedTracks = ALL_TRACKS.filter(function(tr){ return trackIds.indexOf(tr.id) >= 0; });
+
+    orderedTracks.forEach(function(tr){
+      var files = kitDef2.files[tr.id];
+      if(!files || files.length <= 1) return; // 1種類しかないトラックはスキップ
+
+      var rrKey = _activeKit+'/'+tr.id;
+      var currentFixed = _kitFixedIndex[rrKey];
+
+      var row2 = document.createElement('div');
+      row2.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap;';
+
+      var nameEl = document.createElement('div');
+      nameEl.style.cssText = 'font-family:"Bebas Neue",cursive;font-size:11px;letter-spacing:1px;min-width:90px;flex-shrink:0;color:'+tr.accent+';';
+      nameEl.textContent = tr.emoji+' '+tr.name;
+      row2.appendChild(nameEl);
+
+      var btnWrap = document.createElement('div');
+      btnWrap.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+
+      // RRボタン（固定なし）
+      var rrBtn = document.createElement('button');
+      rrBtn.className = 'sampler-track-btn' + (currentFixed===undefined?' active':'');
+      rrBtn.style.cssText += ';color:#4ecdc4;border-color:rgba(78,205,196,0.4);';
+      rrBtn.textContent = 'RR';
+      rrBtn.title = 'ラウンドロビン（毎回切替）';
+      rrBtn.addEventListener('click', function(){
+        delete _kitFixedIndex[rrKey];
+        openSampler();
+      });
+      btnWrap.appendChild(rrBtn);
+
+      // 各サンプルの固定ボタン
+      files.forEach(function(fname, idx){
+        var btn2 = document.createElement('button');
+        var isFixed = currentFixed === idx;
+        btn2.className = 'sampler-track-btn' + (isFixed?' active':'');
+        // ファイル名から番号だけ表示（例: Rock-Snare-ff-1.wav → ff-1）
+        var shortName = fname.replace(/^.*?[-_](?=[a-z0-9]+\.wav$)/i,'').replace('.wav','');
+        // もっとシンプルに番号だけ
+        btn2.textContent = (idx+1)+'';
+        btn2.title = fname;
+        btn2.addEventListener('click', function(){
+          _kitFixedIndex[rrKey] = idx;
+          openSampler();
+          // 試聴：ボタンを押したら音を鳴らす
+          if(actx && _kitBuffers[_activeKit+'/'+tr.id+'/'+idx]){
+            var buf = _kitBuffers[_activeKit+'/'+tr.id+'/'+idx];
+            var src2 = actx.createBufferSource();
+            src2.buffer = buf;
+            var g2 = actx.createGain(); g2.gain.value = 0.7;
+            src2.connect(g2); g2.connect(masterGain);
+            src2.start(actx.currentTime);
+          }
+        });
+        btnWrap.appendChild(btn2);
+      });
+
+      row2.appendChild(btnWrap);
+      kWrap.appendChild(row2);
+    });
+  }
+
   body.appendChild(kWrap);
 
   // ── グローバルシンセプリセット選択 ──
