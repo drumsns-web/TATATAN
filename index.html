@@ -6318,19 +6318,9 @@ function playKitSample(kitId, trackId, t, params){
   var r = Math.pow(2,(p.pitch||0)/12);
   src.playbackRate.value = r;
   var g = actx.createGain();
-  // WAVが24bit低振幅（最大振幅約0.003）のため増幅
-  // クリッピング防止のため控えめに設定
-  var volScale = (p.vol||100)/100;
-  g.gain.value = volScale * 150;
-  // クリッピング防止コンプレッサー
-  var comp = actx.createDynamicsCompressor();
-  comp.threshold.value = -3;
-  comp.knee.value = 3;
-  comp.ratio.value = 8;
-  comp.attack.value = 0.001;
-  comp.release.value = 0.05;
+  g.gain.value = (p.vol||100)/100 * 0.85;
   var dest = buildChain(p.reverb||0);
-  src.connect(g); g.connect(comp); comp.connect(dest);
+  src.connect(g); g.connect(dest);
   src.start(t);
   return true;
 }
