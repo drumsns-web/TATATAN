@@ -6198,7 +6198,7 @@ var KIT_DEFS = {
   'rock': {
     label: 'Rock Kit',
     files: {
-      kick:    ['Rock-Kit-Kick-ff-1.wav','Rock-Kit-Kick-ff-2.wav'],
+      kick:    ['Rock-Kit-Kick-pp-1.wav','Rock-Kit-Kick-pp-2.wav','Rock-Kit-Kick-ff-1.wav','Rock-Kit-Kick-ff-2.wav'],
       snare:   ['Rock-Snare-ff-1.wav','Rock-Snare-ff-2.wav','Rock-Snare-ff-3.wav'],
       rimshot: ['Rock-Snare-pp-1.wav','Rock-Snare-pp-2.wav'],
       hhclose: ['Rock-Kit-HiHat-Tip-1.wav','Rock-Kit-HiHat-Tip-2.wav'],
@@ -6318,16 +6318,17 @@ function playKitSample(kitId, trackId, t, params){
   var r = Math.pow(2,(p.pitch||0)/12);
   src.playbackRate.value = r;
   var g = actx.createGain();
-  // WAVが24bit低振幅（最大振幅約0.003）のため大幅増幅
+  // WAVが24bit低振幅（最大振幅約0.003）のため増幅
+  // クリッピング防止のため控えめに設定
   var volScale = (p.vol||100)/100;
-  g.gain.value = volScale * 250;
+  g.gain.value = volScale * 150;
   // クリッピング防止コンプレッサー
   var comp = actx.createDynamicsCompressor();
-  comp.threshold.value = -6;
-  comp.knee.value = 6;
-  comp.ratio.value = 4;
+  comp.threshold.value = -3;
+  comp.knee.value = 3;
+  comp.ratio.value = 8;
   comp.attack.value = 0.001;
-  comp.release.value = 0.1;
+  comp.release.value = 0.05;
   var dest = buildChain(p.reverb||0);
   src.connect(g); g.connect(comp); comp.connect(dest);
   src.start(t);
