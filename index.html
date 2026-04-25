@@ -6448,6 +6448,7 @@ function openSampler(){
   noKitBtn.style.borderColor = '#4ecdc4';
   noKitBtn.addEventListener('click', function(){
     _activeKit = null;
+    saveSoundSettings();
     openSampler();
   });
   kRow.appendChild(noKitBtn);
@@ -6475,11 +6476,10 @@ function openSampler(){
 
     btn.addEventListener('click', function(){
       _activeKit = kitId;
-      // バックグラウンド読み込み開始
       if(!actx) initAudio();
       preloadKit(kitId);
+      saveSoundSettings();
       openSampler();
-      // 2秒後にUI更新（読み込み進捗を反映）
       setTimeout(openSampler, 2000);
       setTimeout(openSampler, 5000);
     });
@@ -6530,6 +6530,7 @@ function openSampler(){
       rrBtn.title = 'ラウンドロビン（毎回切替）';
       rrBtn.addEventListener('click', function(){
         delete _kitFixedIndex[rrKey];
+        saveSoundSettings();
         openSampler();
       });
       btnWrap.appendChild(rrBtn);
@@ -6546,8 +6547,9 @@ function openSampler(){
         btn2.title = fname;
         btn2.addEventListener('click', function(){
           _kitFixedIndex[rrKey] = idx;
+          saveSoundSettings();
           openSampler();
-          // 試聴：ボタンを押したら音を鳴らす
+          // 試聴
           if(actx && _kitBuffers[_activeKit+'/'+tr.id+'/'+idx]){
             var buf = _kitBuffers[_activeKit+'/'+tr.id+'/'+idx];
             var src2 = actx.createBufferSource();
@@ -6583,6 +6585,7 @@ function openSampler(){
     btn.addEventListener('click', function(){
       _globalPreset = pid;
       _trackPreset = {};
+      saveSoundSettings();
       openSampler();
     });
     gRow.appendChild(btn);
@@ -6612,14 +6615,14 @@ function openSampler(){
       var isDefault = !_trackPreset[tr.id];
       defBtn.className = 'sampler-track-btn global' + (isDefault?' active':'');
       defBtn.textContent = '全体';
-      defBtn.addEventListener('click', function(){ delete _trackPreset[tr.id]; openSampler(); });
+      defBtn.addEventListener('click', function(){ delete _trackPreset[tr.id]; saveSoundSettings(); openSampler(); });
       btns.appendChild(defBtn);
       presetIds.forEach(function(pid){
         if(!SYNTH_PRESETS[pid][tr.id]) return;
         var btn = document.createElement('button');
         btn.className = 'sampler-track-btn' + (_trackPreset[tr.id]===pid?' active':'');
         btn.textContent = SYNTH_PRESETS[pid].label;
-        btn.addEventListener('click', function(){ _trackPreset[tr.id]=pid; openSampler(); });
+        btn.addEventListener('click', function(){ _trackPreset[tr.id]=pid; saveSoundSettings(); openSampler(); });
         btns.appendChild(btn);
       });
       row.appendChild(btns);
@@ -6644,7 +6647,45 @@ document.getElementById('samplerOverlay').addEventListener('click', function(e){
 });
 
 // ══════════════════════════════════════════════
-// 初期化 & デフォルトパターン
+// ── 音源設定の保存・復元（LocalStorage）──
+var STORAGE_KEY = 'tatatan_sound_settings';
+
+function saveSoundSettings(){
+  try {
+    var data = {
+      activeKit:    _activeKit,
+      kitFixedIndex: _kitFixedIndex,
+      globalPreset: _globalPreset,
+      trackPreset:  _trackPreset,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch(e){ console.warn('保存失敗:', e); }
+}
+
+function loadSoundSettings(){
+  try {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return;
+    var data = JSON.parse(raw);
+    if(data.activeKit)      _activeKit      = data.activeKit;
+    if(data.kitFixedIndex)  _kitFixedIndex  = data.kitFixedIndex;
+    if(data.globalPreset)   _globalPreset   = data.globalPreset;
+    if(data.trackPreset)    _trackPreset    = data.trackPreset;
+    // アクティブキットがあれば読み込み開始（AudioContext初期化後に実行）
+    if(_activeKit) {
+      var checkAndLoad = function(){
+        if(actx){ preloadKit(_activeKit); }
+        else { setTimeout(checkAndLoad, 500); }
+      };
+      checkAndLoad();
+    }
+  } catch(e){ console.warn('復元失敗:', e); }
+}
+
+// 起動時に復元
+loadSoundSettings();
+
+// ── 初期化 & デフォルトパターン
 // ══════════════════════════════════════════════
 buildAll();
 var dm='s';
